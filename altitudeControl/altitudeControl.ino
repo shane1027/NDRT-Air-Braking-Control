@@ -1,6 +1,6 @@
 /*
 
-Shane Ryan
+Nathan Vahrenberg
 University of Notre Dame Rocketry Team
 Altitude Control Software
 
@@ -159,19 +159,19 @@ void loop(){
         if(DEBUG){
   	      Serial.print("ax: ");
           Serial.print(xAcc);
-	        Serial.print("\tay: ");
+	        Serial.print("\nay: ");
 	        Serial.print(yAcc);
-	        Serial.print("\taz: ");
+	        Serial.print("\naz: ");
 	        Serial.print(zAcc);
           //Serial.print("\tvx: ");
           //Serial.print(xVel);
           //Serial.print("\tvy: ");
           //Serial.print(yVel);
-          Serial.print("\tvz: ");
+          Serial.print("\nvz: ");
           Serial.print(zVel);
-          Serial.print("\talt: ");
+          Serial.print("\nalt: ");
           Serial.print(altitude);
-	        Serial.print("\tt (us): ");
+	        Serial.print("\nt (us): ");
 	        Serial.print(elapsedTime);
         }
         
@@ -260,25 +260,43 @@ void loop(){
 
 }
 
-// function to calculate and return the estimated maximum altitude
-double calculateApogee( float altitude, float zVel ){ 
+
+
+// new function (grounded in science this time) to calculate apogee.
+double calculateApogee( double altitude, double zVel ){ 
   
   double apogee;
+  double delta_x;
+  double drag_accel;
   
   // rocket design parameters
-  double mass = 12.19; // mass in kg
-  double D_in = 5.5; // diameter in inches
-  double D = D_in*0.0254; // diameter in meters
-  double fuselageArea = (3.1415*(D*D)/4); // CSA in m^2
-  double cd_0 = 0.46; // drag coefficient
-  double rho = 1.225;
-  double g = 9.8;
+  double mass = 12.19;      // mass in kg - this must have changed since last year
+  double D_in = 5.525;      // diameter in inches - may be 5.525in this year
+  double D = D_in*0.0254;   // diameter in meters
+  double fuselageArea = (PI*(D/2.00)*(D/2.00)); // CSA in m^2
+  double cd_0 = 0.46;       // Drag coefficient, which I found is unitless.  where'd it come from?
+  double rho = 1.225;       // Looks like this is the mass density of air @ 15deg Celsius
+  double g = 9.8;           // Gravity, duh!
+
+  // total acceleration rocket experiences at this small dt.  Calculate drag force, divide by mass.
+  drag_accel = -(rho*zVel*zVel*cd_0*fuselageArea/2/mass);// *cd_0*fuselageArea) / (2.00*mass);
+
+//  Serial.println();
+//  Serial.print("drag_accel:  ");
+//  Serial.print(drag_accel);  
+
+  // predicted delta_x before stopping rocket = -(V^2)/(2a).
+  delta_x = -(zVel*zVel) / (2.00*(-g+drag_accel));  
   
-  apogee = altitude + (1/2*mass*zVel*zVel)/(cd_0/2*rho*(zVel/2)*(zVel/2) + mass*g);
-  
-  
-  
+//  Serial.println();
+//  Serial.print(delta_x);
+
+  apogee = altitude + delta_x;
+
+  return apogee;
 }
+
+
 
 void readAccelVal(){
 
@@ -312,49 +330,6 @@ void readAccelVal(){
 
 }
 
-float readAltitude(){
-  
-  toggleOneShot(); //Toggle the OST bit causing the sensor to immediately take another reading
-
-  //Wait for PDR bit, indicates we have new pressure data
-  int counter = 0;
-  while( (IIC_Read(STATUS) & (1<<1)) == 0)
-  {
-      if(++counter > 100) return(-999); //Error out
-      delay(1);
-  }
-  
-  // Read pressure registers
-  Wire.beginTransmission(MPL3115A2_ADDRESS);
-  Wire.write(OUT_P_MSB);  // Address of data to get
-  Wire.endTransmission(false); // Send data to I2C dev with option for a repeated start. THIS IS NECESSARY and not supported before Arduino V1.0.1!
-  Wire.requestFrom(MPL3115A2_ADDRESS, 3); // Request three bytes
-
-  //Wait for data to become available
-  counter = 0;
-  while(Wire.available() < 3)
-  {
-    if(counter++ > 100) return(-999); //Error out
-    delay(1);
-  }
-
-  byte msb, csb, lsb;
-  msb = Wire.read();
-  csb = Wire.read();
-  lsb = Wire.read();
-
-  toggleOneShot(); //Toggle the OST bit causing the sensor to immediately take another reading
-
-  // The least significant bytes l_altitude and l_temp are 4-bit,
-  // fractional values, so you must cast the calulation in (float),
-  // shift the value over 4 spots to the right and divide by 16 (since 
-  // there are 16 values in 4-bits). 
-  float tempcsb = (lsb>>4)/16.0;
-
-  float altitude = (float)( (msb << 8) | csb) + tempcsb;
-
-  return(altitude);
-}
 
 void SPI_Setup(){
 

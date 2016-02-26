@@ -1,6 +1,6 @@
 /*
 
-Shane Ryan   --   v1.5   --   2/19/2016M
+Shane Ryan   --   v1.4   --   2/19/2016M
 University of Notre Dame Rocketry Team
 Altitude Control Software
 
@@ -30,7 +30,7 @@ A5	| SCL (through 330 Ohm resistor)
 #include <SPI.h>
 #include <SD.h>
 #include <Wire.h>
-#include <SparkFunMPL3115A2.h>
+#include <SparkFunMPL3115A2.h>    // this makes life much, much easier for altimeter control.
 
 // define connections for LIS331
 #define SS 10	// Serial Select -> CS
@@ -55,7 +55,7 @@ A5	| SCL (through 330 Ohm resistor)
 
 #define DESIRED_APOGEE 1634           // defined in meters now... much better
 #define DESCENT_DEPLOY_ALT 1238
-
+  
 #define PRE_LAUNCH 0
 #define BURN 1
 #define BURNOUT 2
@@ -66,15 +66,12 @@ A5	| SCL (through 330 Ohm resistor)
 
 // WHY SO MANY GLOBAL VARIABLES?!   bad practice.
 
-double xAcc, yAcc, zAcc;              // Only zAcc seems to be relevant.  xAcc and yAcc calculated later, but never used.
-                                      
+double xAcc, yAcc, zAcc;              // Only zAcc seems to be relevant.  xAcc and yAcc calculated later,
+                                      // but never used.
 double xVel, yVel, zVel;              // what?  Only zVel is ever used.  Do we need the other values?
-
 unsigned long currentAltitudeTime;
 unsigned long lastAltitudeTime;
 unsigned long deltaAltitudeTime;
-unsigned long elapsedTime;
-
 float startingAltitude;
 float currentAltitude;
 float lastAltitude;
@@ -85,8 +82,8 @@ int stateNext;
 
 MPL3115A2 myAltimeter;            // instance of the MPL3115A2 object for altimeter usage.
 
-void setup()
-{ 
+void setup(){
+
       Serial.begin(9600);             // serial port baud rate
   
       pinMode(OVERRIDE_PIN, INPUT);   // pin declarations
@@ -95,9 +92,6 @@ void setup()
       altimeterSetup();               // Efficient altimeter setup        
       startingAltitude = myAltimeter.readAltitude();
       currentAltitude = startingAltitude;
-
-      SPI_Setup();
-      Accelerometer_Setup();
       
       // disable SD data logging for test flight       <-- we're gonna need to work on this
       // initialize SD for data logging
@@ -141,9 +135,7 @@ void setup()
       digitalWrite(SOLENOID_PIN, HIGH);
   
       currentAltitudeTime = micros();        
-      Serial.println("hey I got here - 1");
 }
-
 
 // main program loop
 void loop()
@@ -157,8 +149,7 @@ void loop()
       // predict apogee */
       double apogee = calculateApogee(currentAltitude, zVel);
       // ^we're using altimeter and timers to calculate zvel, no x and y accel or vel??
-
-      elapsedTime = micros();
+      
     
       // print to terminal
       if(DEBUG){
@@ -175,7 +166,8 @@ void loop()
         Serial.print("\nvz: ");
         Serial.print(zVel);
         Serial.print("\nalt: ");
-        Serial.print(currentAltitude);
+        Serial.print(altitude);
+        delay(100);
         Serial.print("\nt (us): ");
         Serial.print(elapsedTime);
       }
@@ -191,7 +183,7 @@ void loop()
         fd.print("\taz: ");
         fd.print(zAcc);
         fd.print("\talt: ");
-        fd.print(currentAltitude);
+        fd.print(altitude);
         fd.print("\tt (us): ");
         fd.print(elapsedTime);
         fd.print("\n");
@@ -232,7 +224,7 @@ void loop()
           break;
         case DESCENT:
           digitalWrite(SOLENOID_PIN, HIGH); // retract tabs during initial descent 
-          if(currentAltitude < DESCENT_DEPLOY_ALT){
+          if(altitude < DESCENT_DEPLOY_ALT){
             stateNext = PASSIVE_DESCENT; 
           }else{
             stateNext = DESCENT;
@@ -240,7 +232,8 @@ void loop()
           break;
         case PASSIVE_DESCENT:
           digitalWrite(SOLENOID_PIN, LOW); // allow tabs to passively deploy
-          stateNext = PASSIVE_DESCENT;         
+          stateNext = PASSIVE_DESCENT; 
+        
       }
             
       state = stateNext;
@@ -248,38 +241,23 @@ void loop()
 
 
 
-// new function (grounded in science this time) to calculate apogee.
-double calculateApogee( double altitude, double zVel )
-{
+// function to calculate and return the estimated maximum altitude  <--- not working
+double calculateApogee( float altitude, float zVel ){ 
+  
   double apogee;
-  double delta_x;
-  double drag_accel;
   
   // rocket design parameters
   double mass = 12.19;      // mass in kg - this must have changed since last year
-  double D_in = 5.525;      // diameter in inches - may be 5.525in this year
+  double D_in = 5.5;        // diameter in inches - may be 5.25in this year
   double D = D_in*0.0254;   // diameter in meters
-  double fuselageArea = (PI*(D/2.00)*(D/2.00)); // CSA in m^2
-  double cd_0 = 0.46;       // Drag coefficient, which I found is unitless.  where'd it come from?
+  double fuselageArea = (3.1415*(D*D)/4); // CSA in m^2  - not quite sure what this means
+  double cd_0 = 0.46;       // Drag coefficient, which I found is unitless
   double rho = 1.225;       // Looks like this is the mass density of air @ 15deg Celsius
   double g = 9.8;           // Gravity, duh!
-
-  // total acceleration rocket experiences at this small dt.  Calculate drag force, divide by mass.
-  drag_accel = -(rho*zVel*zVel*cd_0*fuselageArea/2/mass);// *cd_0*fuselageArea) / (2.00*mass);
-
-//  Serial.println();
-//  Serial.print("drag_accel:  ");
-//  Serial.print(drag_accel);  
-
-  // predicted delta_x before stopping rocket = -(V^2)/(2a).
-  delta_x = -(zVel*zVel) / (2.00*(-g+drag_accel));  
   
-//  Serial.println();
-//  Serial.print(delta_x);
+  apogee = altitude + (1/2*mass*zVel*zVel)/(cd_0/2*rho*(zVel/2)*(zVel/2) + mass*g);
 
-  apogee = altitude + delta_x;
-
-  return apogee;
+  // No clue what Nathan was doing in the equation above, I can't get the units to work out.  
 }
 
 
@@ -324,7 +302,7 @@ void readAccelVal()
 
 
 double readAltVal()
-{ 
+{  
   // update altitude
   lastAltitude = currentAltitude;
   currentAltitude = myAltimeter.readAltitude();   // read altitude in meters
@@ -336,7 +314,7 @@ double readAltVal()
   deltaAltitudeTime = currentAltitudeTime - lastAltitudeTime;
   
   // calculate velocity
-  float zVel = (deltaAltitude) / ((deltaAltitudeTime) / 1000000);
+  float zVel = (altitude - altitude_last) / ((deltaAltitudeTime) / 1000000);
   return zVel;
 }
 
@@ -406,6 +384,7 @@ void Accelerometer_Setup()
 	digitalWrite(SS, HIGH);
 
 }
+
 
 
 

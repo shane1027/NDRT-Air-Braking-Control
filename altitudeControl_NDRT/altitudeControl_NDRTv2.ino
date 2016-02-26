@@ -1,6 +1,6 @@
 /*
 
-Shane Ryan   --   v1.4   --   2/19/2016M
+Shane Ryan   --   v1.3   --   2/19/2016M
 University of Notre Dame Rocketry Team
 Altitude Control Software
 
@@ -64,18 +64,14 @@ A5	| SCL (through 330 Ohm resistor)
 
 #define DEBUG 1 // enables debug terminal, but slows down program execution
 
-// WHY SO MANY GLOBAL VARIABLES?!   bad practice.
-
 double xAcc, yAcc, zAcc;              // Only zAcc seems to be relevant.  xAcc and yAcc calculated later,
                                       // but never used.
 double xVel, yVel, zVel;              // what?  Only zVel is ever used.  Do we need the other values?
-unsigned long currentAltitudeTime;
-unsigned long lastAltitudeTime;
-unsigned long deltaAltitudeTime;
-float startingAltitude;
-float currentAltitude;
-float lastAltitude;
-float deltaAltitude;
+unsigned long startTime;
+unsigned long lastTime;
+unsigned long altitudeTime;
+unsigned long altitudeTimeLast;
+float altitude, startingAltitude;
 
 int state;
 int stateNext;
@@ -84,162 +80,183 @@ MPL3115A2 myAltimeter;            // instance of the MPL3115A2 object for altime
 
 void setup(){
 
-      Serial.begin(9600);             // serial port baud rate
-  
-      pinMode(OVERRIDE_PIN, INPUT);   // pin declarations
-      pinMode(SOLENOID_PIN, OUTPUT);
-  
-      altimeterSetup();               // Efficient altimeter setup        
-      startingAltitude = myAltimeter.readAltitude();
-      currentAltitude = startingAltitude;
-      
-      // disable SD data logging for test flight       <-- we're gonna need to work on this
-      // initialize SD for data logging
-      if(SD_ENABLE){
-        pinMode(SD_PIN, OUTPUT);
-        if(!SD.begin(SD_PIN)){
-          Serial.println("** Warning: SD Initialization failed");
+	      Serial.begin(9600);             // serial port baud rate
+
+        pinMode(OVERRIDE_PIN, INPUT);   // pin declarations
+        pinMode(SOLENOID_PIN, OUTPUT);
+
+        altimeterSetup();               // Efficient altimeter setup        
+        
+        // disable SD data logging for test flight       <-- we're gonna need to work on this
+        // initialize SD for data logging
+        if(SD_ENABLE){
+          pinMode(SD_PIN, OUTPUT);
+          if(!SD.begin(SD_PIN)){
+            Serial.println("** Warning: SD Initialization failed");
+          }
+          File fd = SD.open("datalog.txt", FILE_WRITE);
+          fd.println();
+          fd.println("-----------------------------------------");
+          fd.println();
+          fd.close();
         }
-        File fd = SD.open("datalog.txt", FILE_WRITE);
-        fd.println();
-        fd.println("-----------------------------------------");
-        fd.print("Starting Altitude:  ");
-        fd.print(startingAltitude);
-        fd.println();
-        fd.close();
-      }
-      
-      xVel = 0;
-      yVel = 0;
-      zVel = 0;
-  
-      state = 0;
-      stateNext = 0;
-      
-      // test tab deployment upon startup 
-      digitalWrite(SOLENOID_PIN, HIGH);
-      
-      // tabs retracted 
-      delay(1000); 
-      
-      // tabs deploy
-      digitalWrite(SOLENOID_PIN, LOW);
-      delay(2000); 
-      
-      //repeat retract, deploy, retract
-      digitalWrite(SOLENOID_PIN, HIGH);
-      delay(2000); 
-   
-      digitalWrite(SOLENOID_PIN, LOW);
-      delay(2000); 
-      digitalWrite(SOLENOID_PIN, HIGH);
-  
-      currentAltitudeTime = micros();        
+        
+        // get start time (for reference)     <-- I don't think these can be here
+                                                  // due to delay of tab startup.
+	      startTime = micros();
+        altitudeTime = micros();
+
+        xVel = 0;
+        yVel = 0;
+        zVel = 0;
+        
+        // test tab deployment upon startup 
+        digitalWrite(SOLENOID_PIN, HIGH);
+        
+        // tabs retracted 
+        delay(1000); 
+        
+        // tabs deploy
+        digitalWrite(SOLENOID_PIN, LOW);
+        delay(2000); 
+        
+        //repeat retract, deploy, retract
+        digitalWrite(SOLENOID_PIN, HIGH);
+        delay(2000); 
+     
+        digitalWrite(SOLENOID_PIN, LOW);
+        delay(2000); 
+        digitalWrite(SOLENOID_PIN, HIGH);
+        
+        state = 0;
+        stateNext = 0;
+        
+        startingAltitude = myAltimeter.readAltitude();
+
 }
 
 // main program loop
-void loop()
-{      
-      // update global acceleration variables
-      readAccelVal();
-    
-      // update global altitude variables and return zVelocity
-      zVel = readAltVal();
-    
-      // predict apogee */
-      double apogee = calculateApogee(currentAltitude, zVel);
-      // ^we're using altimeter and timers to calculate zvel, no x and y accel or vel??
-      
-    
-      // print to terminal
-      if(DEBUG){
-        Serial.print("ax: ");
-        Serial.print(xAcc);
-        Serial.print("\nay: ");
-        Serial.print(yAcc);
-        Serial.print("\naz: ");
-        Serial.print(zAcc);
-        Serial.print("\tvx: ");
-        Serial.print(xVel);
-        Serial.print("\tvy: ");
-        Serial.print(yVel);
-        Serial.print("\nvz: ");
-        Serial.print(zVel);
-        Serial.print("\nalt: ");
-        Serial.print(altitude);
-        delay(100);
-        Serial.print("\nt (us): ");
-        Serial.print(elapsedTime);
-      }
-      
-      // disable data logging for test flight
-      // Log data to SD card
-      if(SD_ENABLE){
-        File fd = SD.open("datalog.txt", FILE_WRITE);
-        fd.print("ax: ");
-        fd.print(xAcc);
-        fd.print("\tay: ");
-        fd.print(yAcc);
-        fd.print("\taz: ");
-        fd.print(zAcc);
-        fd.print("\talt: ");
-        fd.print(altitude);
-        fd.print("\tt (us): ");
-        fd.print(elapsedTime);
-        fd.print("\n");
-        fd.close();
-      }
-    
-    
-      //controls NOT disabled for logging    <-- what does this mean?
-      
-      switch (state){
-        case PRE_LAUNCH:
-          digitalWrite(SOLENOID_PIN, HIGH);
-          if(abs(zAcc) >= 2.0){
-            stateNext = BURN;
-          }else{
-            stateNext = PRE_LAUNCH;
-          }
-          break;
-        case BURN:
-          digitalWrite(SOLENOID_PIN, HIGH);
-          if(abs(zAcc) <= 2.0){
-            stateNext = BURNOUT;
-          }else{
-            stateNext = BURN;
-          }
-          break;
-        case BURNOUT:
-          if(apogee > (startingAltitude + DESIRED_APOGEE + (5*0.3094))){
-            digitalWrite(SOLENOID_PIN, HIGH); //keep pin HIGH to close tabs when w/in desired apogee 
-          }else{
-            digitalWrite(SOLENOID_PIN, LOW ); // deploy tabs while descresed vel 
-          }
-          if(zVel < 0){
-            stateNext = DESCENT;
-          }else{
-            stateNext = BURNOUT; 
-          }
-          break;
-        case DESCENT:
-          digitalWrite(SOLENOID_PIN, HIGH); // retract tabs during initial descent 
-          if(altitude < DESCENT_DEPLOY_ALT){
-            stateNext = PASSIVE_DESCENT; 
-          }else{
-            stateNext = DESCENT;
-          }
-          break;
-        case PASSIVE_DESCENT:
-          digitalWrite(SOLENOID_PIN, LOW); // allow tabs to passively deploy
-          stateNext = PASSIVE_DESCENT; 
+void loop(){      
+  
+        // update global acceleration variables
+	      // readAccelVal();
+
+        // update altitude
+        float altitude_last = altitude;
+        altitude = myAltimeter.readAltitude();   // read altitude in meters
+        altitudeTimeLast = altitudeTime;
+        altitudeTime = micros();
+	
+        // update elapsed time*/
+        unsigned long elapsedTime = micros();
+        elapsedTime -= startTime;
         
-      }
-            
-      state = stateNext;
+        // calculate velocity
+        float zVel = (altitude - altitude_last) / ((altitudeTime-altitudeTimeLast) / 1000000);
+        
+        // predict apogee */
+        double apogee = calculateApogee( altitude, zVel );
+        // ^we're using altimeter and timers to calculate zvel, no x and y accel or vel??
+        
+
+	// print to terminal
+        if(DEBUG){
+  	      /*Serial.print("ax: ");
+          Serial.print(xAcc);
+	        Serial.print("\nay: ");
+	        Serial.print(yAcc);
+	        Serial.print("\naz: ");
+	        Serial.print(zAcc);
+          //Serial.print("\tvx: ");
+          //Serial.print(xVel);
+          //Serial.print("\tvy: ");
+          //Serial.print(yVel);
+          Serial.print("\nvz: ");
+          Serial.print(zVel);*/
+          Serial.print("\nalt: ");
+          Serial.print(altitude);
+          delay(100);
+	        //Serial.print("\nt (us): ");
+	        //Serial.print(elapsedTime);
+        }
+        
+        // disable data logging for test flight
+        // Log data to SD card
+        if(SD_ENABLE){
+          File fd = SD.open("datalog.txt", FILE_WRITE);
+          fd.print("ax: ");
+          fd.print(xAcc);
+	        fd.print("\tay: ");
+	        fd.print(yAcc);
+	        fd.print("\taz: ");
+	        fd.print(zAcc);
+          fd.print("\talt: ");
+          fd.print(altitude);
+	        fd.print("\tt (us): ");
+	        fd.print(elapsedTime);
+          fd.print("\n");
+	        fd.close();
+        }
+  
+
+        //controls NOT disabled for logging    <-- what does this mean?
+        
+        switch (state){
+          case PRE_LAUNCH:
+            digitalWrite(SOLENOID_PIN, HIGH);
+            if(abs(zAcc) >= 2.0){
+              stateNext = BURN;
+            }else{
+              stateNext = PRE_LAUNCH;
+            }
+            break;
+          case BURN:
+            digitalWrite(SOLENOID_PIN, HIGH);
+            if(abs(zAcc) <= 2.0){
+              stateNext = BURNOUT;
+            }else{
+              stateNext = BURN;
+            }
+            break;
+          case BURNOUT:
+            if(apogee > (startingAltitude + DESIRED_APOGEE + (5*0.3094))){
+              digitalWrite(SOLENOID_PIN, HIGH); //keep pin HIGH to close tabs when w/in desired apogee 
+            }else{
+              digitalWrite(SOLENOID_PIN, LOW ); // deploy tabs while descresed vel 
+            }
+            if(zVel < 0){
+              stateNext = DESCENT;
+            }else{
+              stateNext = BURNOUT; 
+            }
+            break;
+          case DESCENT:
+            digitalWrite(SOLENOID_PIN, HIGH); // retract tabs during initial descent 
+            if(altitude < DESCENT_DEPLOY_ALT){
+              stateNext = PASSIVE_DESCENT; 
+            }else{
+              stateNext = DESCENT;
+            }
+            break;
+          case PASSIVE_DESCENT:
+            digitalWrite(SOLENOID_PIN, LOW); // allow tabs to passively deploy
+            stateNext = PASSIVE_DESCENT; 
+          
+        }
+        
+        state = stateNext;
+        
+
+        /*
+        // wait and attempt to maintain desired sample speed
+        while( (micros()-lastTime) < 1000000/(SAMPLES_PER_SECOND) ){
+          
+        }
+        */
+        lastTime = elapsedTime;
+        
+
 }
-
-
 
 // function to calculate and return the estimated maximum altitude  <--- not working
 double calculateApogee( float altitude, float zVel ){ 
@@ -257,17 +274,18 @@ double calculateApogee( float altitude, float zVel ){
   
   apogee = altitude + (1/2*mass*zVel*zVel)/(cd_0/2*rho*(zVel/2)*(zVel/2) + mass*g);
 
-  // No clue what Nathan was doing in the equation above, I can't get the units to work out.  
+  // No clue what Nathan was doing in the equation above, I can't get the units to work out. 
+  
+  
 }
-
 
 
 // The below process seems to be the only way to get viable data from the accelerometer, but
 // the sd card logging feature interferes with it...  May have to transmit to comms payload
 // directly and log it there.
 
-void readAccelVal()
-{
+void readAccelVal(){
+
 	byte xAddressByteL = 0x28; // low byte of X acceleration value
 	byte readBit = B10000000; // set register read
 	byte incrementBit = B01000000; // set register increment
@@ -298,30 +316,8 @@ void readAccelVal()
 
 }
 
+void SPI_Setup(){
 
-
-
-double readAltVal()
-{  
-  // update altitude
-  lastAltitude = currentAltitude;
-  currentAltitude = myAltimeter.readAltitude();   // read altitude in meters
-  deltaAltitude = currentAltitude - lastAltitude;
-  
-  // update time between measurements
-  lastAltitudeTime = currentAltitudeTime;
-  currentAltitudeTime = micros();
-  deltaAltitudeTime = currentAltitudeTime - lastAltitudeTime;
-  
-  // calculate velocity
-  float zVel = (altitude - altitude_last) / ((deltaAltitudeTime) / 1000000);
-  return zVel;
-}
-
-
-
-void SPI_Setup()
-{
 	pinMode(SS, OUTPUT);
 
 	// intialize SPI bus
@@ -332,14 +328,15 @@ void SPI_Setup()
 	
 	// Set SPI clock rate to 16MHz / x
 	SPI.setClockDivider(SPI_CLOCK_DIV16); // Currently 1MHz
+	
 }
 
 
 
-
 // This function can be much simpler, bro!!
-void Accelerometer_Setup()
-{
+
+void Accelerometer_Setup(){
+
 	byte addressByte = 0x20;
 	
 	// PM2 PM1 PM0 DR1 DR0 Zen Yen Xen
@@ -384,8 +381,6 @@ void Accelerometer_Setup()
 	digitalWrite(SS, HIGH);
 
 }
-
-
 
 
 // simple altimeter config

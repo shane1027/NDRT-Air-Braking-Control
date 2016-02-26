@@ -1,10 +1,8 @@
 /*
 
-Shane Ryan   --   v1.7   --   2/19/2016M
+Shane Ryan   --   v1.6   --   2/19/2016M
 University of Notre Dame Rocketry Team
 Altitude Control Software
-
-// TO DO:  average velocity, and 
 
 
 LIS331 Accelerometer Wiring
@@ -32,6 +30,14 @@ A5  | SCL (through 330 Ohm resistor)
 #include <stdlib.h>
 #include <SPI.h>
 #include <SD.h>
+#include <SparkFunMPL3115A2.h>
+
+// define connections for LIS331
+#define SS 10  // Serial Select -> CS
+#define MOSI 11 // Master Out - Slave In -> SDA
+#define MISO 12 // Master In - Slave Out -> SA0
+#define SCK 13  // Serial Clock -> SPC
+#define SCALE 0.0007324 // Scale for values in g's   <-- we have bad accel values.  culprit?
 
 #define SD_PIN 8
 #define SD_ENABLE 0 // disabled SD logging because it screwed with SPI bus  <-- duh, you used
@@ -51,19 +57,13 @@ A5  | SCL (through 330 Ohm resistor)
 #define DESCENT 3
 #define PASSIVE_DESCENT 4
 
-#define ALTMODE;
-#define ALTBASIS 18 //start altitude to calculate mean sea level pressure in meters
-//this altitude must be known (or provided by GPS etc.)
-
 #define DEBUG 1 // enables debug terminal, but slows down program execution
 
-double zlastVel;
 double zVel;              // what?  Only zVel is ever used.  Do we need the other values?
-double zAccel;
 
 unsigned long currentAltitudeTime;
 unsigned long lastAltitudeTime;
-unsigned long deltaAltitudeTime; 
+unsigned long deltaAltitudeTime;             // must be a floating pt, to manipulate w/o integer division
 unsigned long elapsedTime;
 
 float startingAltitude;
@@ -73,6 +73,12 @@ float deltaAltitude;
 
 int state;
 int stateNext;
+
+MPL3115A2 myAltimeter;            // instance of the MPL3115A2 object for altimeter usage.
+ 
+#define ALTMODE; //comment out for barometer mode; default is altitude mode
+#define ALTBASIS 18 //start altitude to calculate mean sea level pressure in meters
+//this altitude must be known (or provided by GPS etc.)
  
 const int SENSORADDRESS = 0x60; // address specific to the MPL3115A1, value found in datasheet
  
@@ -80,56 +86,59 @@ float altsmooth = 0; //for exponential smoothing
 byte IICdata[5] = {0,0,0,0,0}; //buffer for sensor data
  
 void setup(){
-      Wire.begin(); // join i2c bus
-      Serial.begin(9600); // start serial for output
-      Serial.println("Setup");
-      if(IIC_Read(0x0C) == 196); //checks whether sensor is readable (who_am_i bit)
-      else Serial.println("i2c bad");
-     
-      IIC_Write(0x2D,0); //write altitude offset=0 (because calculation below is based on offset=0)
-      //calculate sea level pressure by averaging a few readings
-      Serial.println("Pressure calibration...");
-      float buff[4];
-      for (byte i=0;i<4;i++){
-        IIC_Write(0x26, 0b00111011); //bit 2 is one shot mode, bits 4-6 are 128x oversampling
-        IIC_Write(0x26, 0b00111001); //must clear oversampling (OST) bit, otherwise update will be once per second
-        delay(550); //wait for sensor to read pressure (512ms in datasheet)
-        IIC_ReadData(); //read sensor data
-        buff[i] = Baro_Read(); //read pressure
-        Serial.println(buff[i]);
-      }
-      float currpress=(buff[0]+buff[1]+buff[2]+buff[3])/4; //average over two seconds
-     
-      Serial.print("Current pressure: "); Serial.print(currpress); Serial.println(" Pa");
-      //calculate pressure at mean sea level based on a given altitude
-      float seapress = currpress/pow(1-ALTBASIS*0.0000225577,5.255877);
-      Serial.print("Sea level pressure: "); Serial.print(seapress); Serial.println(" Pa");
-      Serial.print("Temperature: ");
-      Serial.print(IICdata[3]+(float)(IICdata[4]>>4)/16); Serial.println(" C");
-     
-      // This configuration option calibrates the sensor according to
-      // the sea level pressure for the measurement location (2 Pa per LSB)
-      IIC_Write(0x14, (unsigned int)(seapress / 2)>>8);//IIC_Write(0x14, 0xC3); // BAR_IN_MSB (register 0x14):
-      IIC_Write(0x15, (unsigned int)(seapress / 2)&0xFF);//IIC_Write(0x15, 0xF3); // BAR_IN_LSB (register 0x15):
-     
-      //one reading seems to take 4ms (datasheet p.33);
-      //oversampling 32x=130ms interval between readings seems to be best for 10Hz; slightly too slow
-      //first bit is altitude mode (vs. barometer mode)
-     
-      //Altitude mode
-      IIC_Write(0x26, 0b10111011); //bit 2 is one shot mode //0xB9 = 0b10111001
-      IIC_Write(0x26, 0b10111001); //must clear oversampling (OST) bit, otherwise update will be once per second
-      delay(550); //wait for measurement
-      IIC_ReadData(); //
-      altsmooth=Alt_Read();
-      Serial.print("Altitude now: "); Serial.println(altsmooth);
-      Serial.println("Done.");
+  Wire.begin(); // join i2c bus
+  Serial.begin(9600); // start serial for output
+  Serial.println("Setup");
+  if(IIC_Read(0x0C) == 196); //checks whether sensor is readable (who_am_i bit)
+  else Serial.println("i2c bad");
+ 
+  IIC_Write(0x2D,0); //write altitude offset=0 (because calculation below is based on offset=0)
+  //calculate sea level pressure by averaging a few readings
+  Serial.println("Pressure calibration...");
+  float buff[4];
+  for (byte i=0;i<4;i++){
+    IIC_Write(0x26, 0b00111011); //bit 2 is one shot mode, bits 4-6 are 128x oversampling
+    IIC_Write(0x26, 0b00111001); //must clear oversampling (OST) bit, otherwise update will be once per second
+    delay(550); //wait for sensor to read pressure (512ms in datasheet)
+    IIC_ReadData(); //read sensor data
+    buff[i] = Baro_Read(); //read pressure
+    Serial.println(buff[i]);
+  }
+  float currpress=(buff[0]+buff[1]+buff[2]+buff[3])/4; //average over two seconds
+ 
+  Serial.print("Current pressure: "); Serial.print(currpress); Serial.println(" Pa");
+  //calculate pressure at mean sea level based on a given altitude
+  float seapress = currpress/pow(1-ALTBASIS*0.0000225577,5.255877);
+  Serial.print("Sea level pressure: "); Serial.print(seapress); Serial.println(" Pa");
+  Serial.print("Temperature: ");
+  Serial.print(IICdata[3]+(float)(IICdata[4]>>4)/16); Serial.println(" C");
+ 
+  // This configuration option calibrates the sensor according to
+  // the sea level pressure for the measurement location (2 Pa per LSB)
+  IIC_Write(0x14, (unsigned int)(seapress / 2)>>8);//IIC_Write(0x14, 0xC3); // BAR_IN_MSB (register 0x14):
+  IIC_Write(0x15, (unsigned int)(seapress / 2)&0xFF);//IIC_Write(0x15, 0xF3); // BAR_IN_LSB (register 0x15):
+ 
+  //one reading seems to take 4ms (datasheet p.33);
+  //oversampling 32x=130ms interval between readings seems to be best for 10Hz; slightly too slow
+  //first bit is altitude mode (vs. barometer mode)
+ 
+  //Altitude mode
+  IIC_Write(0x26, 0b10111011); //bit 2 is one shot mode //0xB9 = 0b10111001
+  IIC_Write(0x26, 0b10111001); //must clear oversampling (OST) bit, otherwise update will be once per second
+  delay(550); //wait for measurement
+  IIC_ReadData(); //
+  altsmooth=Alt_Read();
+  Serial.print("Altitude now: "); Serial.println(altsmooth);
+  Serial.println("Done.");
 
-      pinMode(OVERRIDE_PIN, INPUT);   // pin declarations
+        pinMode(OVERRIDE_PIN, INPUT);   // pin declarations
       pinMode(SOLENOID_PIN, OUTPUT);
   
+      SPI_Setup();
+     // Accelerometer_Setup();
 
-   
+     // altimeterSetup();               // Efficient altimeter setup        
+      
       // disable SD data logging for test flight       <-- we're gonna need to work on this
       // initialize SD for data logging
       if(SD_ENABLE){
@@ -145,7 +154,11 @@ void setup(){
         fd.println();
         fd.close();
       }
-
+      
+      xVel = 0;
+      yVel = 0;
+      zVel = 0;
+  
       state = 0;
       stateNext = 0;
       
@@ -154,25 +167,16 @@ void setup(){
       
       // tabs retracted 
       delay(1000); 
-         
-      // tabs deploy
-      digitalWrite(SOLENOID_PIN, LOW);
-      delay(2000); 
-      
-      //repeat retract, deploy, retract
-      digitalWrite(SOLENOID_PIN, HIGH);
-      delay(2000); 
-   
-      digitalWrite(SOLENOID_PIN, LOW);
-      delay(2000); 
-      digitalWrite(SOLENOID_PIN, HIGH);
-
-      startingAltitude = sensor_read_data();
 }
  
 void loop(){
+     // sensor_read_data();
+  // your code here
       // update global altitude variables and return zVelocity
       currentAltitude = sensor_read_data();
+
+      // update global acceleration variables
+      // readAccelVal();
     
       // predict apogee */
       double apogee;
@@ -183,20 +187,38 @@ void loop(){
     
       // print to terminal
       if(DEBUG){
-        Serial.print("\nalt: ");
-        Serial.print(currentAltitude);
-        Serial.print("\tapogee: ");
-        Serial.print(apogee);
-        Serial.print("\tzVel: ");
-        Serial.print(zVel);
-        Serial.print("\tzAcc: ");
-        Serial.print(zAccel);
+        Serial.print("\nax: ");
+        Serial.print(xAcc);
+        Serial.print("\tay: ");
+        Serial.print(yAcc);
+        Serial.print("\taz: ");
+        Serial.print(zAcc);
+//        Serial.print("\nvx: ");
+//        Serial.print(xVel);
+//        Serial.print("\tvy: ");
+//        Serial.print(yVel);
+//        Serial.print("\tvz: ");
+//        Serial.print(zVel);
+          Serial.print("\talt: ");
+          Serial.print(currentAltitude);
+          Serial.print("\tapogee: ");
+          Serial.print(apogee);
+          Serial.print("\tzVel: ");
+          Serial.print(zVel);
+//        Serial.print("\nt (us): ");
+//        Serial.print(elapsedTime);
       }
       
       // disable data logging for test flight
       // Log data to SD card
       if(SD_ENABLE){
         File fd = SD.open("datalog.txt", FILE_WRITE);
+        fd.print("ax: ");
+        fd.print(xAcc);
+        fd.print("\tay: ");
+        fd.print(yAcc);
+        fd.print("\taz: ");
+        fd.print(zAcc);
         fd.print("\talt: ");
         fd.print(currentAltitude);
         fd.print("\tt (us): ");
@@ -205,12 +227,13 @@ void loop(){
         fd.close();
       }
     
+    
       //controls NOT disabled for logging    <-- what does this mean?
       
       switch (state){
         case PRE_LAUNCH:
           digitalWrite(SOLENOID_PIN, HIGH);
-          if(abs(zAccel) >= 12.0){
+          if(abs(zAcc) >= 2.0){
             stateNext = BURN;
           }else{
             stateNext = PRE_LAUNCH;
@@ -218,19 +241,19 @@ void loop(){
           break;
         case BURN:
           digitalWrite(SOLENOID_PIN, HIGH);
-          if(abs(zAccel) <= 20.0){
+          if(abs(zAcc) <= 2.0){
             stateNext = BURNOUT;
           }else{
             stateNext = BURN;
           }
           break;
         case BURNOUT:
-          if(apogee < (startingAltitude + DESIRED_APOGEE)){
+          if(apogee > (startingAltitude + DESIRED_APOGEE + (5*0.3094))){
             digitalWrite(SOLENOID_PIN, HIGH); //keep pin HIGH to close tabs when w/in desired apogee 
           }else{
             digitalWrite(SOLENOID_PIN, LOW ); // deploy tabs while descresed vel 
           }
-          if(zAccel < 0){
+          if(zVel < 0){
             stateNext = DESCENT;
           }else{
             stateNext = BURNOUT; 
@@ -252,7 +275,6 @@ void loop(){
       state = stateNext;
 }
 
-
 // new function (grounded in science this time) to calculate apogee.
 double calculateApogee( double altitude, double zVel )
 {
@@ -266,8 +288,7 @@ double calculateApogee( double altitude, double zVel )
   double D = D_in*0.0254;   // diameter in meters
   double fuselageArea = (PI*(D/2.00)*(D/2.00)); // CSA in m^2
   double cd_0 = 0.46;       // Drag coefficient, which I found is unitless.  where'd it come from?
-  // check open rocket for coefficient
-  double rho = 0.065;       // will be updated
+  double rho = 1.225;       // Looks like this is the mass density of air @ 15deg Celsius
   double g = 9.8;           // Gravity, duh!
 
   // total acceleration rocket experiences at this small dt.  Calculate drag force, divide by mass.
@@ -287,12 +308,10 @@ double calculateApogee( double altitude, double zVel )
 
   return apogee;
 }
-
  
 double sensor_read_data(){
   // This function reads the altitude (or barometer) and temperature registers, then prints their values
   // variables for the calculations
-  double timeSeconds;
   int m_temp;
   float l_temp;
   float altbaro, temperature;
@@ -315,24 +334,18 @@ double sensor_read_data(){
   temperature = (float)(m_temp + l_temp);
  
   #ifdef ALTMODE //converts byte data into float; change function to Alt_Read() or Baro_Read()
-    lastAltitude = currentAltitude;
     altbaro = Alt_Read();
-    currentAltitude = altbaro;
-    deltaAltitude = currentAltitude - lastAltitude;
   #else
     altbaro = Baro_Read();
   #endif
  
   altsmooth=(altsmooth*3+altbaro)/4; //exponential smoothing to get a smooth time series
-
-  
-  lastAltitudeTime = currentAltitudeTime;
-  currentAltitudeTime = micros();
-  deltaAltitudeTime = currentAltitudeTime - lastAltitudeTime;
-  timeSeconds = ((deltaAltitudeTime) / 1000000.0);
-  zlastVel = zVel;
-  zVel = abs((deltaAltitude) / (timeSeconds));  
-  zAccel = zVel - zlastVel;
+ 
+//  Serial.print(altbaro); // in meters or Pascal
+//  Serial.print("\t");
+//  Serial.print(altsmooth); // exponentially smoothed
+//  Serial.print("\t");
+//  Serial.println(temperature); // in degrees C
 
   return altsmooth;
 }
@@ -381,3 +394,95 @@ void IIC_Write(byte regAddr, byte value){
   Wire.endTransmission(true);
 }
 
+void SPI_Setup()
+{
+  pinMode(SS, OUTPUT);
+
+  // intialize SPI bus
+  SPI.begin();
+  
+  SPI.setBitOrder(MSBFIRST);
+  SPI.setDataMode(SPI_MODE0);
+  
+  // Set SPI clock rate to 16MHz / x
+  SPI.setClockDivider(SPI_CLOCK_DIV16); // Currently 1MHz
+}
+
+void Accelerometer_Setup()
+{
+  byte addressByte = 0x20;
+  
+  // PM2 PM1 PM0 DR1 DR0 Zen Yen Xen
+  byte ctrlRegByte = 0x37; // 00111111 : normal mode, 1000Hz, xyz enabled
+
+  // send data for Control Register 1
+  digitalWrite(SS, LOW);
+  delay(1);
+  SPI.transfer(addressByte);
+  SPI.transfer(ctrlRegByte);
+  delay(1);
+  digitalWrite(SS, HIGH);
+  
+  delay(100);
+  
+  // write to Control Register 2
+  addressByte = 0x21;
+  ctrlRegByte = 0x00; // High pass filter off
+  
+  // Send data for Control Register 2
+  digitalWrite(SS, LOW);
+  delay(1);
+  SPI.transfer(addressByte);
+  SPI.transfer(ctrlRegByte);
+  delay(1);
+  digitalWrite(SS, HIGH);
+  
+  delay(100);
+  
+  // write to Control Register 4
+  addressByte = 0x23;
+  
+  // BDU BLE FS1 FS0 STsign 0 ST SIM
+  ctrlRegByte = 0x30; // 00110000 : 24G (full scale)
+  
+  // Send data for Control Register 4
+  digitalWrite(SS, LOW);
+  delay(1);
+  SPI.transfer(addressByte);
+  SPI.transfer(ctrlRegByte);
+  delay(1);
+  digitalWrite(SS, HIGH);
+
+}
+
+void readAccelVal()
+{
+  byte xAddressByteL = 0x28; // low byte of X acceleration value
+  byte readBit = B10000000; // set register read
+  byte incrementBit = B01000000; // set register increment
+  byte dataByte = xAddressByteL | readBit | incrementBit;
+  byte b0 = 0x0;
+  
+  digitalWrite(SS, LOW); // Set signal low to initialize communication
+  delay(1);
+  SPI.transfer(dataByte); // request read
+  byte xL = SPI.transfer(b0); // get low byte of X accel
+  byte xH = SPI.transfer(b0); // get high byte of X accel
+  byte yL = SPI.transfer(b0); // get low byte of Y accel
+  byte yH = SPI.transfer(b0); // get high byte of Y accel
+  byte zL = SPI.transfer(b0); // get low byte of Z accel
+  byte zH = SPI.transfer(b0); // get high byte of Z accel
+  delay(1);
+  digitalWrite(SS, HIGH); // end communication
+  
+  // merge high and low components of accelerations
+  int xVal = (xL | (xH << 8) );
+  int yVal = (yL | (yH << 8) );
+  int zVal = (zL | (zH << 8) );
+  
+  // scale and set global vars
+  xAcc = xVal * SCALE;
+  yAcc = yVal * SCALE;
+  zAcc = zVal * SCALE;
+
+}
