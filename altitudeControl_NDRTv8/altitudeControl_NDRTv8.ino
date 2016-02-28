@@ -1,188 +1,77 @@
-/*
-
-Shane Ryan   --   v1.8   --   2/26/2016
-University of Notre Dame Rocketry Team
-Altitude Control Software
-
-// TO DO:  average velocity, and implement Chris's new apogee
-// calculations and drag coefficients.
-
-
-Adafruit 10DOF Board Wiring
-Arduino | 10DOF
-----------------
-GND | GND
-5V  | Vin
-SDA | SDA
-SCL | SCL
-
-*/
-
-
-#include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_LSM303_U.h>
-#include <Adafruit_BMP085_U.h>
-#include <Adafruit_Simple_AHRS.h>
-#include <SD.h>
-#include <RTClib.h>
 
-// Set chip select pin for SPI.
-const int chipSelect = 10;
+/* Assign a unique ID to these sensors */
+Adafruit_LSM303_Accel_Unified accel = Adafruit_LSM303_Accel_Unified(54321);
+Adafruit_LSM303_Mag_Unified mag = Adafruit_LSM303_Mag_Unified(12345);
 
-// Create RTC instance
-RTC_DS1307 rtc;
+float AccelMinX, AccelMaxX;
+float AccelMinY, AccelMaxY;
+float AccelMinZ, AccelMaxZ;
 
-// Create sensor instances.
-Adafruit_LSM303_Accel_Unified accel(30301);
-Adafruit_LSM303_Mag_Unified   mag(30302);
-Adafruit_BMP085_Unified       bmp(18001);
+float MagMinX, MagMaxX;
+float MagMinY, MagMaxY;
+float MagMinZ, MagMaxZ;
 
-// Create simple AHRS algorithm using the above sensors.
-Adafruit_Simple_AHRS          ahrs(&accel, &mag);
+long lastDisplayTime;
 
-// Update this with the correct SLP for accurate altitude measurements
-float seaLevelPressure = SENSORS_PRESSURE_SEALEVELHPA;
-
-// Define modes for the writeData function that writes to SD Card.
-#define WRITE_GLOBAL 2
-#define WRITE_INPUT 1
-
-// function to write to SD Card.
-void writeData(float valueToWrite, int mode);
-
-float roll;
-float pitch;
-float altitude;
-float temperature;
-float heading;
-float currentTime;
-
-
-void setup()
+void setup(void) 
 {
+  Serial.begin(9600);
+  Serial.println("LSM303 Calibration"); Serial.println("");
   
-  Serial.begin(115200); 
-  Serial.print("Initializing SD card...");
-
-  // attempt card initialization.
-  if (!SD.begin(chipSelect)) {
-    Serial.println("Card failed, or not present");
-    return;
+  /* Initialise the accelerometer */
+  if(!accel.begin())
+  {
+    /* There was a problem detecting the ADXL345 ... check your connections */
+    Serial.println("Ooops, no LSM303 detected ... Check your wiring!");
+    while(1);
   }
-  Serial.println("card initialized.");   // our card is now open for data logging.
-
-  if (! rtc.begin()) {
-    Serial.println("Couldn't find RTC");
-    while (1);
+  /* Initialise the magnetometer */
+  if(!mag.begin())
+  {
+    /* There was a problem detecting the LSM303 ... check your connections */
+    Serial.println("Ooops, no LSM303 detected ... Check your wiring!");
+    while(1);
   }
-
-  if (! rtc.isrunning()) {
-    Serial.println("RTC is NOT running!");
-    // set RTC to the date & time this sketch was compiled.
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  }
-
-  accel.begin();
-  mag.begin();
-  bmp.begin();
-
-  
+  lastDisplayTime = millis();
 }
 
-
-
-
-void loop()
+void loop(void) 
 {
-  sensors_vec_t   orientation;
+  /* Get a new sensor event */ 
+  sensors_event_t accelEvent; 
+  sensors_event_t magEvent; 
+  
+  accel.getEvent(&accelEvent);
+  mag.getEvent(&magEvent);
+  
+  if (accelEvent.acceleration.x < AccelMinX) AccelMinX = accelEvent.acceleration.x;
+  if (accelEvent.acceleration.x > AccelMaxX) AccelMaxX = accelEvent.acceleration.x;
+  
+  if (accelEvent.acceleration.y < AccelMinY) AccelMinY = accelEvent.acceleration.y;
+  if (accelEvent.acceleration.y > AccelMaxY) AccelMaxY = accelEvent.acceleration.y;
 
-  // Use the simple AHRS function to get the current orientation.
-  if (ahrs.getOrientation(&orientation))
+  if (accelEvent.acceleration.z < AccelMinZ) AccelMinZ = accelEvent.acceleration.z;
+  if (accelEvent.acceleration.z > AccelMaxZ) AccelMaxZ = accelEvent.acceleration.z;
+
+  if (magEvent.magnetic.x < MagMinX) MagMinX = magEvent.magnetic.x;
+  if (magEvent.magnetic.x > MagMaxX) MagMaxX = magEvent.magnetic.x;
+  
+  if (magEvent.magnetic.y < MagMinY) MagMinY = magEvent.magnetic.y;
+  if (magEvent.magnetic.y > MagMaxY) MagMaxY = magEvent.magnetic.y;
+
+  if (magEvent.magnetic.z < MagMinZ) MagMinZ = magEvent.magnetic.z;
+  if (magEvent.magnetic.z > MagMaxZ) MagMaxZ = magEvent.magnetic.z;
+
+  if ((millis() - lastDisplayTime) > 1000)  // display once/second
   {
-    /* 'orientation' should have valid .roll and .pitch fields */
-    Serial.print(F("Orientation: "));
-    Serial.print(orientation.roll);
-    Serial.print(F(" "));
-    Serial.print(orientation.pitch);
-    Serial.print(F(" "));
-    Serial.print(orientation.heading);
-    Serial.println(F(""));
-
-    roll = orientation.roll;
-    pitch = orientation.pitch;
-    heading = orientation.heading;
-  }
-
-  // Calculate the altitude using the barometric pressure sensor
-  sensors_event_t bmp_event;
-  bmp.getEvent(&bmp_event);
-  if (bmp_event.pressure)
-  {
-    /* Get ambient temperature in C */
-    bmp.getTemperature(&temperature);
-    /* Convert atmospheric pressure, SLP and temp to altitude */
-    Serial.print(F("Alt: "));
-    altitude = bmp.pressureToAltitude(seaLevelPressure,
-                                          bmp_event.pressure,
-                                          temperature);
-    Serial.print(altitude); 
-    Serial.println(F(""));
-    /* Display the temperature */
-    Serial.print(F("Temp: "));
-    Serial.print(temperature);
-    Serial.println(F("\n"));
-  }
-  
-  delay(100);
-  
-  writeData(0, WRITE_GLOBAL);
-  
-}
-
-
-void writeData(float valueToWrite, int mode)
-{
-  // make a string for assembling the data to log:
-  String dataString = "";
-
-  switch (mode) {
-    case WRITE_INPUT:
-       // Append data passed to function to the string:
-       dataString += String(valueToWrite);
-       break;
-     case WRITE_GLOBAL:
-       // Update global variables onto SD Card.
-       dataString += String(roll);
-       dataString += String(", ");
-       dataString += String(pitch);
-       dataString += String(", ");
-       dataString += String(heading);
-       dataString += String(", ");
-       dataString += String(temperature);
-       dataString += String(", ");
-       dataString += String(altitude);
-       dataString += String(", ");
-       dataString += String(currentTime);  
-       break;     
-  }
- 
-    
-  // open file, remember to close:
-  File dataFile = SD.open("datalog.txt", FILE_WRITE);
-
-  // if the file is available, write to it:
-  if (dataFile) {
-    dataFile.println(dataString);
-    dataFile.close();
-    // print to the serial port too:
-    Serial.println(dataString);
-  }
-  
-  // if the file isn't open, pop up an error:
-  else {
-    Serial.println("error opening datalog.txt");
+    Serial.print("Accel Minimums: "); Serial.print(AccelMinX); Serial.print("  ");Serial.print(AccelMinY); Serial.print("  "); Serial.print(AccelMinZ); Serial.println();
+    Serial.print("Accel Maximums: "); Serial.print(AccelMaxX); Serial.print("  ");Serial.print(AccelMaxY); Serial.print("  "); Serial.print(AccelMaxZ); Serial.println();
+    Serial.print("Mag Minimums: "); Serial.print(MagMinX); Serial.print("  ");Serial.print(MagMinY); Serial.print("  "); Serial.print(MagMinZ); Serial.println();
+    Serial.print("Mag Maximums: "); Serial.print(MagMaxX); Serial.print("  ");Serial.print(MagMaxY); Serial.print("  "); Serial.print(MagMaxZ); Serial.println(); Serial.println();
+    lastDisplayTime = millis();
   }
 }
 
